@@ -1,0 +1,2 @@
+rtmlib==0.0.16
+onnxruntime==1.31.1
