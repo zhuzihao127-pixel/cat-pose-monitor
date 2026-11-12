@@ -4,6 +4,8 @@
 
 ![猫咪姿态 Demo 的实际推理画面](examples/preview.jpg)
 
+[查看 RTX 3090 的 6 秒演示视频](examples/cat-pose-rtx3090.mp4)
+
 ## 运行
 
 需要 Python 3.11 或以上。已在 Linux x86-64、Python 3.14 和 CPU 推理环境验证。第一次运行会从模型发布方下载约 72 MB 的权重，校验后保存在 `models/`。
@@ -57,5 +59,5 @@ YOLOX-Tiny 检测猫，RTMPose-M 用 AP-10K 的定义定位 17 个关键点，�
 ## 来源
 
 - 猫检测使用 [YOLOX-Tiny ONNX](https://github.com/Megvii-BaseDetection/YOLOX/releases/tag/0.1.1rc0)，关键点使用 [MMPose RTMPose-M](https://github.com/open-mmlab/mmpose/tree/main/configs/animal_2d_keypoint/rtmpose/ap10k) 和 [AP-10K](https://github.com/AlexTheBad/AP-10K)。推理接口来自 [rtmlib](https://github.com/Tau-J/rtmlib)。权重遵循上游条款。
-- `examples/cat-walking.mp4` 来自 Dzkouslavia 的 [Black Cat walking.webm](https://commons.wikimedia.org/wiki/File:Black_Cat_walking.webm)，采用 [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)。本仓库裁取并转码了片段，`examples/preview.jpg` 是同一片段叠加推理结果后的截图。
+- `examples/cat-walking.mp4` 来自 Dzkouslavia 的 [Black Cat walking.webm](https://commons.wikimedia.org/wiki/File:Black_Cat_walking.webm)，采用 [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)。本仓库裁取并转码了片段，RTX 3090 演示视频和预览图在该片段上叠加了推理结果。
 - 本仓库代码采用 [MIT 许可证](LICENSE)。
