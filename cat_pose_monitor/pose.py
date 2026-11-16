@@ -85,13 +85,24 @@ class CatPose:
 
 
 class CatPoseMonitor:
-    def __init__(self, model_dir, detection_threshold=0.25, keypoint_threshold=0.35):
+    def __init__(self, model_dir, detection_threshold=0.25, keypoint_threshold=0.35,
+                 device="cpu"):
+        if device == "cuda":
+            import onnxruntime as ort
+            if "CUDAExecutionProvider" not in ort.get_available_providers():
+                raise RuntimeError("CUDA requires onnxruntime-gpu and compatible CUDA libraries")
+            ort.preload_dlls()
         detector_path, pose_path = prepare_models(model_dir)
         self.detector = YOLOX(
             str(detector_path), model_input_size=(416, 416),
-            det_mode="multiclass", score_thr=detection_threshold,
+            det_mode="multiclass", score_thr=detection_threshold, device=device,
         )
-        self.estimator = RTMPose(str(pose_path), model_input_size=(256, 256))
+        self.estimator = RTMPose(str(pose_path), model_input_size=(256, 256), device=device)
+        if device == "cuda":
+            for model in (self.detector, self.estimator):
+                if model.session.get_providers()[0] != "CUDAExecutionProvider":
+                    raise RuntimeError("CUDA initialization failed. Check the driver and CUDA libraries.")
+                model.session.disable_fallback()
         self.cat_class = YOLOX.COCO_CLASSES.index("cat")
         self.keypoint_threshold = keypoint_threshold
 

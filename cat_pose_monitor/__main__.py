@@ -7,10 +7,12 @@ import time
 from collections import Counter
 from contextlib import nullcontext
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import cv2
 
 from .pose import CatPoseMonitor, annotate
+from .temporal import TemporalMonitor, draw_monitor_panel
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -25,6 +27,11 @@ def parse_args():
     parser.add_argument("--model-dir", type=Path, default=Path("models"), help="Model cache directory")
     parser.add_argument("--output", type=Path, help="Annotated image or .mp4 video")
     parser.add_argument("--jsonl", type=Path, help="One record per input frame")
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--monitor", action="store_true", help="Enable continuous visual monitoring")
+    parser.add_argument("--roi", type=float, nargs=4, metavar=("X1", "Y1", "X2", "Y2"),
+                        help="Monitoring rectangle in normalized image coordinates (0 to 1)")
+    parser.add_argument("--events", type=Path, help="Write visual episode summaries as JSON")
     parser.add_argument("--no-display", action="store_true", help="Run without a preview window")
     parser.add_argument("--max-frames", type=int, help="Stop after this many frames")
     parser.add_argument("--detection-threshold", type=float, default=0.25)
@@ -45,24 +52,34 @@ def parse_args():
             and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))):
         parser.error("No graphical display detected. Use --no-display.")
 
-    paths = [path.resolve() for path in (args.source, args.output, args.jsonl) if path is not None]
+    paths = [path.resolve() for path in (args.source, args.output, args.jsonl, args.events)
+             if path is not None]
     if len(paths) != len(set(paths)):
-        parser.error("Input, annotated output and JSONL must use distinct paths")
+        parser.error("Input, annotated output, JSONL and event summaries must use distinct paths")
 
     args.image = args.source is not None and args.source.suffix.lower() in IMAGE_SUFFIXES
+    args.monitor = bool(args.monitor or args.events or args.roi)
+    args.roi = args.roi or (0.0, 0.0, 1.0, 1.0)
+    x1, y1, x2, y2 = args.roi
+    if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
+        parser.error("--roi requires 0 <= X1 < X2 <= 1 and 0 <= Y1 < Y2 <= 1")
+    if args.monitor and args.image:
+        parser.error("Continuous monitoring requires a video or camera")
     valid_output = IMAGE_SUFFIXES if args.image else {".mp4"}
     if args.output and args.output.suffix.lower() not in valid_output:
         parser.error(f"Output extension must be one of: {', '.join(sorted(valid_output))}")
     return args
 
 
-def record_frame(stream, index, timestamp, poses):
+def record_frame(stream, index, timestamp, poses, observation=None):
     if stream is not None:
         record = {
             "frame_index": index,
             "timestamp_s": round(timestamp, 6),
             "cats": [pose.as_dict() for pose in poses],
         }
+        if observation is not None:
+            record["observation"] = observation
         stream.write(json.dumps(record, allow_nan=False) + "\n")
 
 
@@ -90,6 +107,9 @@ def run_video(args, monitor, journal):
     writer = None
     frame_index = 0
     counts = Counter()
+    observation_counts = Counter()
+    temporal = TemporalMonitor(args.roi) if args.monitor else None
+    end_reason = "read_error"
     try:
         if not capture.isOpened():
             raise RuntimeError(f"Could not open {'camera' if camera else 'video'}: {source}")
@@ -104,6 +124,7 @@ def run_video(args, monitor, journal):
             if not ok:
                 if camera:
                     raise RuntimeError(f"Camera {source} stopped returning frames")
+                end_reason = "recording_end"
                 break
 
             now = time.monotonic()
@@ -111,12 +132,17 @@ def run_video(args, monitor, journal):
                 first_frame_at = now
             timestamp = now - first_frame_at if camera else frame_index / fps
             poses = monitor(frame)
-            record_frame(journal, frame_index, timestamp, poses)
+            observation = temporal.update(poses, timestamp, frame.shape) if temporal else None
+            if observation:
+                observation_counts[observation["state"]] += 1
+            record_frame(journal, frame_index, timestamp, poses, observation)
             counts.update(pose.posture for pose in poses)
             frame_index += 1
 
             if args.output or not args.no_display:
                 canvas = annotate(frame, poses)
+                if observation is not None:
+                    canvas = draw_monitor_panel(canvas, observation, args.roi)
                 if args.output:
                     if writer is None:
                         height, width = canvas.shape[:2]
@@ -130,22 +156,41 @@ def run_video(args, monitor, journal):
                 if not args.no_display:
                     cv2.imshow(WINDOW, canvas)
                     if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                        end_reason = "user_stop"
                         break
+        else:
+            end_reason = "frame_limit"
 
         if not frame_index:
             raise RuntimeError(f"No readable frames in {source}")
         return frame_index, counts
+    except KeyboardInterrupt:
+        end_reason = "user_stop"
+        raise
     finally:
         capture.release()
         if writer is not None:
             writer.release()
+        if temporal:
+            temporal.finish(end_reason)
+            if args.events:
+                report = {"schema_version": 1, "modality": "vision", "roi": list(args.roi),
+                          "frames_processed": frame_index, "end_reason": end_reason,
+                          "observation_frame_counts": dict(observation_counts),
+                          "episodes": temporal.episodes}
+                with NamedTemporaryFile(mode="w", dir=args.events.parent, delete=False,
+                                        encoding="utf-8", suffix=".tmp") as output:
+                    json.dump(report, output, indent=2, allow_nan=False)
+                    temporary_path = Path(output.name)
+                temporary_path.replace(args.events)
 
 
 def main():
     args = parse_args()
     try:
-        monitor = CatPoseMonitor(args.model_dir, args.detection_threshold, args.keypoint_threshold)
-        for path in (args.output, args.jsonl):
+        monitor = CatPoseMonitor(args.model_dir, args.detection_threshold,
+                                 args.keypoint_threshold, args.device)
+        for path in (args.output, args.jsonl, args.events):
             if path is not None:
                 path.parent.mkdir(parents=True, exist_ok=True)
         journal = args.jsonl.open("w", encoding="utf-8", buffering=1) if args.jsonl else nullcontext()

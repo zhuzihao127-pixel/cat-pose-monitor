@@ -1,0 +1,2 @@
+rtmlib==0.0.16
+onnxruntime-gpu[cuda,cudnn]==1.26.0

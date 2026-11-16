@@ -37,6 +37,46 @@ python -m cat_pose_monitor --camera 0
 python -m cat_pose_monitor --source cat.jpg --no-display --output output/pose.jpg
 ```
 
+## 纯视觉连续监测
+
+`--monitor` 将逐帧骨架组成时间序列，画面旁显示移动、身体活动、静止以及有效的静止持续时间。整个流程使用现有预训练权重和可检查的几何、时间规则，所需新增训练标签为零。
+
+```bash
+python -m cat_pose_monitor --source examples/cat-walking.mp4 --monitor --no-display \
+  --output output/monitor.mp4 --jsonl output/monitor.jsonl --events output/events.json
+```
+
+固定相机后，可用 `--roi X1 Y1 X2 Y2` 指定猫砂盆的监测矩形，坐标范围为 0 到 1。默认监测整幅画面。猫框中心进入矩形时开始记录一个可见片段。下例将画面中间区域作为监测范围。
+
+```bash
+python -m cat_pose_monitor --camera 0 --roi 0.1 0.1 0.9 0.9 \
+  --jsonl output/live.jsonl --events output/live-events.json
+```
+
+每个片段记录开始时间、最后看到猫的时间、有效观测时长、各动作累计时长，以及最长连续静止和低姿态时长。`review_reasons` 按演示阈值标出持续静止、持续低姿态或动作证据不足的片段，供人工回看。具体阈值位于 `temporal.py`，需通过实际机位数据校准。
+
+低可信关键点会令动作状态进入 `unknown`。短暂漏检中断动作计时，超过 1 秒的漏检结束当前可见片段，并记为 `visibility_lost`。猫框中心连续处于区域外 0.4 秒后记录 `left_roi`。视频开始或结束时猫已在画面中，会保留对应边界信息。只有一只猫可见时才计算连续动作，多猫画面记为 `multiple_cats`。
+
+这些输出描述画面中的运动和姿态。排尿产出、排便类型和病情需要进一步的事件标注与验证。手持镜头、遮挡和远距离小目标会影响关键点与片段统计。
+
+## NVIDIA GPU
+
+桌面 NVIDIA GPU 可在独立虚拟环境中安装 `requirements-gpu.txt`，然后加上 `--device cuda`。该依赖组合使用 ONNX Runtime 1.26、CUDA 12 和 cuDNN 9。启动时会校验两个模型的 CUDA 执行后端。
+
+```bash
+python3 -m venv .venv-gpu
+source .venv-gpu/bin/activate
+python -m pip install -r requirements-gpu.txt
+python -m cat_pose_monitor --source examples/cat-walking.mp4 --monitor --device cuda \
+  --no-display --output output/gpu-monitor.mp4 --events output/gpu-events.json
+```
+
+时序逻辑的回归检查覆盖漏检、区域边界、多猫、视频裁切边界、不同帧率和往复动作。
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## 输出
 
 YOLOX-Tiny 检测猫，RTMPose-M 用 AP-10K 的定义定位 17 个关键点，包括眼、鼻、颈、尾根、肩、髋和四只爪。姿态标签基于同侧肩、髋和爪的相对位置。
@@ -55,6 +95,8 @@ YOLOX-Tiny 检测猫，RTMPose-M 用 AP-10K 的定义定位 17 个关键点，�
 ## 验证范围
 
 在随仓库提供的 6 秒视频中，Demo 处理了 72 帧，其中 61 帧检出猫，38 帧输出站立样，23 帧保留待判断。另用两张照片检查了坐姿样和低姿态分支。USB 摄像头和 Jetson Nano 4GB 实机仍需验证。当前桌面版使用 ONNX Runtime CPU，模型文件采用 ONNX 格式。
+
+纯视觉时序版本在 RTX 3090 上运行了 20.2 秒的真实猫砂盆水印预览，共处理 505 帧，489 帧检出猫，形成一个覆盖约 20 秒的可见片段。片段中猫低头、转身并活动前肢，盆沿和俯视角度影响了具体姿态判断。该样本两端都已在盆内，事件文件记录了视频边界。样本来源为 [Storyblocks — Domestic Cat Digs In Litter Box](https://www.storyblocks.com/video/stock/domestic-cat-digs-in-litter-box-captured-indoors-cat-toilet-349025949)，本地运行日志位于 `output/litter-visual-events.json`。
 
 ## 来源
 
